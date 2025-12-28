@@ -1,122 +1,81 @@
 import pandas as pd
-import numpy as np
+import ta
+import talib  # <-- The library you successfully installed
+from ta.volatility import BollingerBands
+from ta.trend import MACD
+from ta.volume import VolumeWeightedAveragePrice
 
-def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
-    df['ma10'] = df['close'].rolling(10).mean()
-    df['ma20'] = df['close'].rolling(20).mean()
-    df['ma50'] = df['close'].rolling(50).mean()
-    df['ma200'] = df['close'].rolling(200).mean()
+def add_technical_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculates and adds common technical indicators and candlestick patterns to 
+    the price DataFrame.
+    """
+    
+    # Safety Check
+    if df is None or df.empty:
+        return df
 
-    df['ma10_ma20_diff'] = df['ma10'] - df['ma20']
-    df['ma20_ma50_diff'] = df['ma20'] - df['ma50']
-    df['price_above_200'] = (df['close'] > df['ma200']).astype(int)
-    return df
+    # --- 1. Custom Moving Averages (Trend Indicators) ---
+    df['ma_20'] = df['close'].rolling(window=20).mean()
+    df['ma_200'] = df['close'].rolling(window=200).mean()
+    df['ma_300'] = df['close'].rolling(window=300).mean() # Very long-term trend filter
+    
+    # --- 2. Bollinger Bands (Volatility Indicator) ---
+    bb_indicator = BollingerBands(close=df['close'], window=20, window_dev=2)
+    df['bb_high'] = bb_indicator.bollinger_hband()
+    df['bb_low'] = bb_indicator.bollinger_lband()
 
-def add_rsi(df: pd.DataFrame, period=14) -> pd.DataFrame:
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / (loss + 1e-9)
-    df['rsi'] = 100 - (100 / (1 + rs))
-    return df
+    # --- 3. Relative Strength Index (Momentum Indicator) ---
+    df["rsi_14"] = ta.momentum.RSIIndicator(close=df["close"], window=14).rsi()
 
-def add_volume_features(df: pd.DataFrame) -> pd.DataFrame:
-    df['vol_ma20'] = df['volume'].rolling(20).mean()
-    df['vol_rel'] = df['volume'] / (df['vol_ma20'] + 1e-9)
-    df['vol_spike'] = (df['vol_rel'] > 2).astype(int)
-    return df
+    
+    # RSI Overbought/Oversold Signal (Custom Range)
+    df['rsi_signal'] = 0
+    df.loc[df['rsi_14'] >= 80, 'rsi_signal'] = 2  # Extreme Overbought
+    df.loc[(df['rsi_14'] >= 70) & (df['rsi_14'] < 80), 'rsi_signal'] = 1 # Overbought
+    df.loc[df['rsi_14'] <= 40, 'rsi_signal'] = -1 # Oversold
+    
+    # --- 4. MACD (Trend/Momentum) ---
+    macd_indicator = MACD(close=df['close'], window_fast=12, window_slow=26, window_sign=9)
+    df['macd_line'] = macd_indicator.macd()
+    df['macd_hist'] = macd_indicator.macd_diff()
 
-def detect_cup_handle_window(prices: pd.Series) -> int:
-    if len(prices) < 40:
-        return 0
-    first = prices[:10]
-    middle = prices[10:30]
-    last = prices[30:]
+    # --- 5. Volume Features ---
+    df['vwap'] = VolumeWeightedAveragePrice(
+        high=df['high'], low=df['low'], close=df['close'], volume=df['volume'], window=14
+    ).volume_weighted_average_price()
+    
+    df['vol_change_pct'] = df['volume'].pct_change()
+    
+    # --- 6. Pattern-Related Features ---
+    # ATR is a volatility proxy useful for detecting pattern consolidation/breakouts
+    df['atr_14'] = ta.volatility.AverageTrueRange(
+        high=df['high'], low=df['low'], close=df['close'], window=14, fillna=False
+    ).average_true_range()
 
-    start_high = first.max()
-    mid_low = middle.min()
-    end_high = last.max()
+    # --- 7. Candlestick Pattern Recognition (using talib) ---
+    # Define OHLC variables for cleaner talib function calls
+    o = df['open']
+    h = df['high']
+    l = df['low']
+    c = df['close']
+    
+    # Reversal and Indecision Patterns
+    df['pattern_hammer'] = talib.CDLHAMMER(o, h, l, c)
+    df['pattern_hanging_man'] = talib.CDLHANGINGMAN(o, h, l, c)
+    df['pattern_engulfing'] = talib.CDLENGULFING(o, h, l, c)
+    df['pattern_shooting_star'] = talib.CDLSHOOTINGSTAR(o, h, l, c)
+    df['pattern_doji'] = talib.CDLDOJI(o, h, l, c)
+    
+    # Strong Reversal/Continuation Patterns
+    df['pattern_morning_star'] = talib.CDLMORNINGSTAR(o, h, l, c)
+    df['pattern_evening_star'] = talib.CDLEVENINGSTAR(o, h, l, c)
+    df['pattern_marubozu'] = talib.CDLMARUBOZU(o, h, l, c)
+    df['pattern_3_white_soldiers'] = talib.CDL3WHITESOLDIERS(o, h, l, c)
+    df['pattern_3_black_crows'] = talib.CDL3BLACKCROWS(o, h, l, c)
 
-    cond_highs = abs(start_high - end_high) / start_high < 0.05
-    cond_low = mid_low < first.min() and mid_low < last.min()
-
-    return int(cond_highs and cond_low)
-
-def add_pattern_flags(df: pd.DataFrame) -> pd.DataFrame:
-    df['cup_handle'] = 0
-    lookback = 40
-
-    for i in range(lookback, len(df)):
-        window = df['close'].iloc[i - lookback : i]
-        df.iloc[i, df.columns.get_loc('cup_handle')] = detect_cup_handle_window(window)
-
-    df['desc_triangle'] = 0
-    return df
-
-def add_ma_stack_signals(df: pd.DataFrame) -> pd.DataFrame:
-    cond_bull = (df['ma10'] > df['ma20']) & (df['ma20'] > df['ma50']) & (df['ma50'] > df['ma200'])
-    cond_bear = (df['ma10'] < df['ma20']) & (df['ma20'] < df['ma50']) & (df['ma50'] < df['ma200'])
-
-    df['ma_bull_stack'] = cond_bull.astype(int)
-    df['ma_bear_stack'] = cond_bear.astype(int)
-
-    df['ma10_cross_over_20'] = ((df['ma10'] > df['ma20']) &
-                                (df['ma10'].shift(1) <= df['ma20'].shift(1))).astype(int)
-
-    df['ma10_cross_under_20'] = ((df['ma10'] < df['ma20']) &
-                                 (df['ma10'].shift(1) >= df['ma20'].shift(1))).astype(int)
-    return df
-
-def add_trend_pattern_flags(df: pd.DataFrame) -> pd.DataFrame:
-    N = 20
-    df['price_trend'] = df['close'].diff().rolling(N).sum()
-
-    df['bullish_continuation'] = (df['price_trend'] > 0).astype(int)
-    df['bearish_continuation'] = (df['price_trend'] < 0).astype(int)
-
-    df['higher_low'] = df['low'] > df['low'].shift(5)
-    df['bullish_reversal'] = ((df['price_trend'].shift(5) < 0) & df['higher_low']).astype(int)
-
-    df['lower_high'] = df['high'] < df['high'].shift(5)
-    df['bearish_reversal'] = ((df['price_trend'].shift(5) > 0) & df['lower_high']).astype(int)
-
-    return df
-
-def add_bullish_score(df: pd.DataFrame) -> pd.DataFrame:
-    bull_raw = (
-        2*df['ma_bull_stack'] +
-        1.5*df['ma10_cross_over_20'] +
-        1*df['rsi'].between(50,70).astype(int) +
-        1*df['vol_spike'] +
-        1.5*df['bullish_continuation'] +
-        1.5*df['bullish_reversal'] +
-        1*df.get('cup_handle',0)
-    )
-
-    bear_raw = (
-        2*df['ma_bear_stack'] +
-        1.5*df['ma10_cross_under_20'] +
-        1*(df['rsi']<40).astype(int) +
-        1*df['vol_spike'] +
-        1.5*df['bearish_continuation'] +
-        1.5*df['bearish_reversal'] +
-        1*df.get('desc_triangle',0)
-    )
-
-    df['bullish_score_raw'] = bull_raw - bear_raw
-
-    min_v = df['bullish_score_raw'].min()
-    max_v = df['bullish_score_raw'].max()
-    df['bullish_score'] = (df['bullish_score_raw'] - min_v) / (max_v - min_v + 1e-9)
-
-    return df
-
-def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
-    df = add_moving_averages(df)
-    df = add_rsi(df)
-    df = add_volume_features(df)
-    df = add_ma_stack_signals(df)
-    df = add_pattern_flags(df)
-    df = add_trend_pattern_flags(df)
-    df = add_bullish_score(df)
+    # --- 8. Final Cleanup ---
+    # Drop all NaN values created by the rolling windows (especially MA_300)
+    df = df.dropna()
+    
     return df
