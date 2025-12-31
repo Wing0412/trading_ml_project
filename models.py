@@ -66,9 +66,9 @@ def _time_series_train_test_split(
     return train_df, test_df
 
 
-# ----------------------------
+
 # Classification: Bullish/Bearish
-# ----------------------------
+
 
 def train_direction_model(
     df: pd.DataFrame,
@@ -168,9 +168,9 @@ def predict_direction_proba(
     return out
 
 
-# ----------------------------
+
 # Regression: 1-week future_return
-# ----------------------------
+
 
 def train_return_model(
     df: pd.DataFrame,

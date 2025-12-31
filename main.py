@@ -5,12 +5,13 @@ from features import add_technical_features
 from targets import add_future_returns_target
 from models import train_direction_model
 from backtest import run_backtest
+from unsupervised import fit_kmeans_regimes
 from datetime import date
 
 def main():
     
 
-    ticker = "SPY"                 
+    ticker = "SOFI"                 
     start_date = "2015-01-01"   
     end_date = date.today().isoformat()  
 
@@ -32,6 +33,18 @@ def main():
 
     print("INFO: Adding targets...")
     df = add_future_returns_target(df, horizon=horizon)
+    
+    print("INFO: Running unsupervised regime clustering (KMeans)...")
+    df_clustered, unsup_result = fit_kmeans_regimes(df, k_values=[2, 3, 4, 5, 6])
+
+    print("===== UNSUPERVISED METRICS =====")
+    print(f"best_k: {unsup_result.best_k}")
+    print(f"silhouette: {unsup_result.metrics['silhouette']:.4f}")
+
+# Show last few cluster labels
+    print("\n===== SAMPLE CLUSTERS (last 5 rows) =====")
+    print(df_clustered[["close", "cluster"]].tail(5))
+
 
     # -----------------------------
     # TRAIN CLASSIFICATION MODEL
